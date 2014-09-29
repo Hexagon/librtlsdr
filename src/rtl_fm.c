@@ -140,6 +140,7 @@ struct demod_state
 	int      prev_lpr_index;
 	int      dc_block, dc_avg;
 	void     (*mode_demod)(struct demod_state*);
+	int      cleared;
 	pthread_rwlock_t rw;
 	pthread_cond_t ready;
 	pthread_mutex_t ready_m;
@@ -160,6 +161,17 @@ struct output_state
 	pthread_mutex_t ready_m;
 };
 
+struct status_state
+{
+	int      exit_flag;
+	pthread_t thread;
+	int      frequency;
+	pthread_rwlock_t rw;
+	pthread_cond_t ready;
+	pthread_mutex_t ready_m;
+	struct controller_state *controller_target;
+};
+
 struct controller_state
 {
 	int      exit_flag;
@@ -177,6 +189,7 @@ struct controller_state
 struct dongle_state dongle;
 struct demod_state demod;
 struct output_state output;
+struct status_state status;
 struct controller_state controller;
 
 void usage(void)
@@ -757,7 +770,13 @@ void full_demod(struct demod_state *d)
 				d->lowpassed[i] = 0;
 			}
 		} else {
-			d->squelch_hits = 0;}
+			// Essentially checks if this is the first
+			// squelch-pass for this frequency,
+			// Status thread will set cleared to 2 after
+			// current frequency is passed to stdout
+			if (d->cleared==0) d->cleared=1;
+			d->squelch_hits = 0;
+		}
 	}
 	d->mode_demod(d);  /* lowpassed -> result */
 	if (d->mode_demod == &raw_demod) {
@@ -824,8 +843,13 @@ static void *demod_thread_fn(void *arg)
 		}
 		if (d->squelch_level && d->squelch_hits > d->conseq_squelch) {
 			d->squelch_hits = d->conseq_squelch + 1;  /* hair trigger */
+			d->cleared = 0;
 			safe_cond_signal(&controller.hop, &controller.hop_m);
 			continue;
+		}
+		if (d->cleared==1) {
+			safe_cond_signal(&status.ready, &status.ready_m);
+			d->cleared=2;
 		}
 		pthread_rwlock_wrlock(&o->rw);
 		memcpy(o->result, d->result, 2*d->result_len);
@@ -845,6 +869,16 @@ static void *output_thread_fn(void *arg)
 		pthread_rwlock_rdlock(&s->rw);
 		fwrite(s->result, 2, s->result_len, s->file);
 		pthread_rwlock_unlock(&s->rw);
+	}
+	return 0;
+}
+
+static void *status_thread_fn(void *arg)
+{
+	struct status_state *s = arg;
+	while (!do_exit) {
+		safe_cond_wait(&s->ready, &s->ready_m);
+		fprintf(stderr,"\nFrequency %f Hz\n", (float)(controller.freqs[controller.freq_now])/1000000.0f);
 	}
 	return 0;
 }
@@ -907,9 +941,12 @@ static void *controller_thread_fn(void *arg)
 	fprintf(stderr, "Output at %u Hz.\n", demod.rate_in/demod.post_downsample);
 
 	while (!do_exit) {
+
 		safe_cond_wait(&s->hop, &s->hop_m);
+
 		if (s->freq_len <= 1) {
 			continue;}
+
 		/* hacky hopping */
 		s->freq_now = (s->freq_now + 1) % s->freq_len;
 		optimal_settings(s->freqs[s->freq_now], demod.rate_in);
@@ -971,6 +1008,7 @@ void demod_init(struct demod_state *s)
 	s->now_lpr = 0;
 	s->dc_block = 0;
 	s->dc_avg = 0;
+	s->cleared = 0;
 	pthread_rwlock_init(&s->rw, NULL);
 	pthread_cond_init(&s->ready, NULL);
 	pthread_mutex_init(&s->ready_m, NULL);
@@ -992,9 +1030,23 @@ void output_init(struct output_state *s)
 	pthread_mutex_init(&s->ready_m, NULL);
 }
 
+void status_init(struct status_state *s)
+{
+	s->frequency = 0;
+	pthread_cond_init(&s->ready, NULL);
+	pthread_mutex_init(&s->ready_m, NULL);
+	s->controller_target = &controller;
+}
+
 void output_cleanup(struct output_state *s)
 {
 	pthread_rwlock_destroy(&s->rw);
+	pthread_cond_destroy(&s->ready);
+	pthread_mutex_destroy(&s->ready_m);
+}
+
+void status_cleanup(struct status_state *s)
+{
 	pthread_cond_destroy(&s->ready);
 	pthread_mutex_destroy(&s->ready_m);
 }
@@ -1046,6 +1098,7 @@ int main(int argc, char **argv)
 	demod_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
+	status_init(&status);
 
 	while ((opt = getopt(argc, argv, "d:f:g:s:b:l:o:t:r:p:E:F:A:M:h")) != -1) {
 		switch (opt) {
@@ -1228,6 +1281,7 @@ int main(int argc, char **argv)
 	pthread_create(&controller.thread, NULL, controller_thread_fn, (void *)(&controller));
 	usleep(100000);
 	pthread_create(&output.thread, NULL, output_thread_fn, (void *)(&output));
+	pthread_create(&status.thread, NULL, status_thread_fn, (void *)(&status));
 	pthread_create(&demod.thread, NULL, demod_thread_fn, (void *)(&demod));
 	pthread_create(&dongle.thread, NULL, dongle_thread_fn, (void *)(&dongle));
 
@@ -1246,12 +1300,15 @@ int main(int argc, char **argv)
 	pthread_join(demod.thread, NULL);
 	safe_cond_signal(&output.ready, &output.ready_m);
 	pthread_join(output.thread, NULL);
+	safe_cond_signal(&status.ready, &status.ready_m);
+	pthread_join(status.thread, NULL);
 	safe_cond_signal(&controller.hop, &controller.hop_m);
 	pthread_join(controller.thread, NULL);
 
 	//dongle_cleanup(&dongle);
 	demod_cleanup(&demod);
 	output_cleanup(&output);
+	status_cleanup(&status);
 	controller_cleanup(&controller);
 
 	if (output.file != stdout) {
