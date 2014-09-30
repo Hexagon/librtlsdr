@@ -878,7 +878,7 @@ static void *status_thread_fn(void *arg)
 	struct status_state *s = arg;
 	while (!do_exit) {
 		safe_cond_wait(&s->ready, &s->ready_m);
-		fprintf(stderr,"\nFrequency %f Hz\n", (float)(controller.freqs[controller.freq_now])/1000000.0f);
+		fprintf(stderr,"\nFrequency %f MHz\n", (float)(controller.freqs[controller.freq_now])/1000000.0f);
 	}
 	return 0;
 }
