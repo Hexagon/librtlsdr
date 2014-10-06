@@ -53,6 +53,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -91,6 +92,9 @@ static int ACTUAL_BUF_LENGTH;
 static int *atan_lut = NULL;
 static int atan_lut_size = 131072; /* 512 KB */
 static int atan_lut_coef = 8;
+
+time_t rawtime;
+struct tm * timeinfo;
 
 struct dongle_state
 {
@@ -876,9 +880,17 @@ static void *output_thread_fn(void *arg)
 static void *status_thread_fn(void *arg)
 {
 	struct status_state *s = arg;
+	char * clean_time;
 	while (!do_exit) {
 		safe_cond_wait(&s->ready, &s->ready_m);
-		fprintf(stderr,"\nFrequency %f Hz\n", (float)(controller.freqs[controller.freq_now])/1000000.0f);
+  		time ( &rawtime );
+  		timeinfo = localtime ( &rawtime );
+
+  		// Remove trailing \n\n from asctime
+  		clean_time = asctime (timeinfo);
+  		if(strlen(clean_time)>0) clean_time[strlen(clean_time) - 1] = 0;
+
+		fprintf(stderr,"\n[%s] Frequency %f Hz\n", clean_time, (float)(controller.freqs[controller.freq_now])/1000000.0f);
 	}
 	return 0;
 }
