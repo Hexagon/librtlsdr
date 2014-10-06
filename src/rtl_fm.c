@@ -883,6 +883,7 @@ static void *status_thread_fn(void *arg)
 	char * clean_time;
 	while (!do_exit) {
 		safe_cond_wait(&s->ready, &s->ready_m);
+
   		time ( &rawtime );
   		timeinfo = localtime ( &rawtime );
 
@@ -890,7 +891,7 @@ static void *status_thread_fn(void *arg)
   		clean_time = asctime (timeinfo);
   		if(strlen(clean_time)>0) clean_time[strlen(clean_time) - 1] = 0;
 
-		fprintf(stderr,"\n[%s] Frequency %f Hz\n", clean_time, (float)(controller.freqs[controller.freq_now])/1000000.0f);
+		fprintf(stderr,"\n[%s] Frequency %f MHz\n", clean_time, (float)(controller.freqs[controller.freq_now])/1000000.0f);
 	}
 	return 0;
 }
